@@ -8,6 +8,8 @@ import gdata.youtube.service
 from gdata.service import BadAuthentication
 
 from youtube_dl import YoutubeDL
+from apiclient.discovery import build
+from apiclient.errors import HttpError
 
 from twisted.web import client
 from twisted.internet import reactor
@@ -21,6 +23,10 @@ from urlparse import parse_qs, parse_qsl
 from threading import Thread
 
 HTTPConnection.debuglevel = 1
+
+DEVELOPER_KEY = "AIzaSyChvLZRinP2xwXoXWNEqVeaz71SQJnjrlc"
+YOUTUBE_API_SERVICE_NAME = "youtube"
+YOUTUBE_API_VERSION = "v3"
 
 if 'HTTPSConnection' not in dir(httplib):
 	# python on enimga2 has no https socket support
@@ -128,66 +134,55 @@ class MyTubeFeedEntry():
 
 	def getTubeId(self):
 		#print "[MyTubeFeedEntry] getTubeId"
-		ret = None
-		if self.entry.media.player:
-			split = self.entry.media.player.url.split("=")
-			ret = split.pop()
-			if ret.startswith('youtube_gdata'):
-				tmpval=split.pop()
-				if tmpval.endswith("&feature"):
-					tmp = tmpval.split("&")
-					ret = tmp.pop(0)
-		return ret
+		return self.entry["id"]["videoId"]
 
 	def getTitle(self):
 		#print "[MyTubeFeedEntry] getTitle",self.entry.media.title.text
-		return self.entry.media.title.text
+		try:
+			return str(self.entry["snippet"]["title"]).encode('utf-8').strip()
+		except KeyError:
+			return None
 
 	def getDescription(self):
-		#print "[MyTubeFeedEntry] getDescription"
-		if self.entry.media is not None and self.entry.media.description is not None:
-			return self.entry.media.description.text
-		return "not vailable"
+		try:
+			return self.entry["snippet"]["description"].encode('utf-8').strip()
+		except KeyError:
+			return None
 
-	def getThumbnailUrl(self, index = 0):
+	def getThumbnailUrl(self, index=0):
 		#print "[MyTubeFeedEntry] getThumbnailUrl"
-		if index < len(self.entry.media.thumbnail):
-			return self.entry.media.thumbnail[index].url
-		return None
+		try:
+			return str(self.entry["snippet"]["thumbnails"]["default"]["url"])
+		except KeyError:
+			return None
 
 	def getPublishedDate(self):
-		if self.entry.published is not None:
-			return self.entry.published.text
-		return "unknown"
+		try:
+			return self.entry["snippet"]["publishedAt"]
+		except KeyError:
+			return None
 
 	def getViews(self):
-		if self.entry.statistics is not None:
-			return self.entry.statistics.view_count
 		return "not available"
 
 	def getDuration(self):
-		if self.entry.media is not None and self.entry.media.duration is not None:
-			return self.entry.media.duration.seconds
-		else:
-			return 0
+		# @TODO
+		return 0
 
 	def getRatingAverage(self):
-		if self.entry.rating is not None:
-			return self.entry.rating.average
+		# @TODO
 		return 0
 
 
 	def getNumRaters(self):
-		if self.entry.rating is not None:
-			return self.entry.rating.num_raters
+		# @TODO
 		return ""
 
 	def getAuthor(self):
-		authors = []
-		for author in self.entry.author:
-			authors.append(author.name.text)
-		author = ", ".join(authors)
-		return author
+		try:
+			return self.entry["snippet"]["channelTitle"]
+		except KeyError:
+			return None
 
 	def getUserFeedsUrl(self):
 		for author in self.entry.author:
@@ -196,15 +191,16 @@ class MyTubeFeedEntry():
 		return False
 
 	def getUserId(self):
-		return self.getUserFeedsUrl().split('/')[-1]
+		try:
+			return self.entry["snippet"]["channelTitle"]
+		except KeyError:
+			return None
 
 	def subscribeToUser(self):
-		username = self.getUserId()
-		return myTubeService.SubscribeToUser(username)
-		
+		return myTubeService.SubscribeToUser(self.getUserId())
+
 	def addToFavorites(self):
-		video_id = self.getTubeId()
-		return myTubeService.addToFavorites(video_id)
+		return myTubeService.addToFavorites(self.getTubeId())
 
 	def PrintEntryDetails(self):
 		EntryDetails = { 'Title': None, 'TubeID': None, 'Published': None, 'Published': None, 'Description': None, 'Category': None, 'Tags': None, 'Duration': None, 'Views': None, 'Rating': None, 'Thumbnails': None}
@@ -434,7 +430,7 @@ class MyTubePlayerService():
 	def getFeed(self, url, feedname = "", callback = None, errorback = None):
 		print "[MyTube] MyTubePlayerService - getFeed:",url, feedname
 		self.feedentries = []
-		ytservice = self.yt_service.GetYouTubeVideoFeed
+		#ytservice = self.yt_service.GetYouTubeVideoFeed
 		
 		if feedname == "my_subscriptions":
 			url = "http://gdata.youtube.com/feeds/api/users/default/newsubscriptionvideos"
@@ -455,9 +451,18 @@ class MyTubePlayerService():
 				url = url + feedname
 		elif feedname in ("top_rated","most_viewed","recently_featured","top_favorites","most_recent","most_discussed","most_linked","most_responded"):
 			url = None
-			ytservice = self.getFeedService(feedname)
+			#ytservice = self.getFeedService(feedname)
 
-		queryThread = YoutubeQueryThread(ytservice, url, self.gotFeed, self.gotFeedError, callback, errorback)
+		youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=DEVELOPER_KEY)
+
+		request = youtube.search().list(
+			q="test",
+			part="id,snippet",
+			maxResults="25",
+			type="video"
+		)
+
+		queryThread = YoutubeQueryThread(request, url, self.gotFeed, self.gotFeedError, callback, errorback)
 		queryThread.start()
 		return queryThread
 
@@ -486,7 +491,7 @@ class MyTubePlayerService():
 	def gotFeed(self, feed, callback):
 		if feed is not None:
 			self.feed = feed
-			for entry in self.feed.entry:
+			for entry in self.feed['items']:
 				MyFeedEntry = MyTubeFeedEntry(self, entry)
 				self.feedentries.append(MyFeedEntry)
 		if callback is not None:
@@ -527,36 +532,32 @@ class MyTubePlayerService():
 			return str('Error: ' + e)
 	
 	def getTitle(self):
-		return self.feed.title.text
+		return ""
 
 	def getEntries(self):
 		return self.feedentries
 
 	def itemCount(self):
-		return self.feed.items_per_page.text
+		return ""
 
 	def getTotalResults(self):
-		if self.feed.total_results is None:
+		if self.feed["pageInfo"]["totalResults"] is None:
 			return 0
-				
-		return self.feed.total_results.text
+
+		return self.feed["pageInfo"]["totalResults"]
 
 	def getNextFeedEntriesURL(self):
-		for link in self.feed.link:
-			if link.rel == "next":
-				return link.href
+		if self.feed["nextPageToken"] is None:
+			return self.feed["nextPageToken"]
 		return None
 
 	def getCurrentPage(self):
-		if self.feed.start_index is None:
-			return 1
-		
-		return int(int(self.feed.start_index.text) / int(self.itemCount())) + 1
+		return 1
 
 class YoutubeQueryThread(Thread):
 	def __init__(self, query, param, gotFeed, gotFeedError, callback, errorback):
 		Thread.__init__(self)
-		self.messagePump = ePythonMessagePump()
+		#self.messagePump = ePythonMessagePump()
 		self.messages = ThreadQueue()
 		self.gotFeed = gotFeed
 		self.gotFeedError = gotFeedError
@@ -565,22 +566,38 @@ class YoutubeQueryThread(Thread):
 		self.query = query
 		self.param = param
 		self.canceled = False
-		self.messagepPump_conn = self.messagePump.recv_msg.connect(self.finished)
+		#self.messagepPump_conn = self.messagePump.recv_msg.connect(self.finished)
 
 	def cancel(self):
 		self.canceled = True
 
 	def run(self):
-		try:
-			if self.param is None:
-				feed = self.query()
-			else:
-				feed = self.query(self.param)
-			self.messages.push((True, feed, self.callback))
-			self.messagePump.send(0)
-		except Exception, ex:
-			self.messages.push((False, ex, self.errorback))
-			self.messagePump.send(0)
+
+		search_response = self.query.execute()
+
+		#videos = []
+
+		# Add each result to the appropriate list, and then display the lists of
+		# matching videos, channels, and playlists.
+		#for search_result in search_response.get("items", []):
+		#  if search_result["id"]["kind"] == "youtube#video":
+		#    videos.append(search_result)
+
+		#print "Videos:\n", "\n".join(videos), "\n"
+		#print "Channels:\n", "\n".join(channels), "\n"
+		#print "Playlists:\n", "\n".join(playlists), "\n"
+		self.gotFeed(search_response, self.callback)
+
+	#try:
+	#if self.param is None:
+	#  feed = self.query()
+	#else:
+	#  feed = self.query(self.param)
+	#self.messages.push((True, feed, self.callback))
+	#self.messagePump.send(0)
+	#except Exception, ex:
+	#self.messages.push((False, ex, self.errorback))
+	#self.messagePump.send(0)
 
 	def finished(self, val):
 		if not self.canceled:
