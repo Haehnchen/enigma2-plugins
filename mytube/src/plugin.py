@@ -295,7 +295,6 @@ class MyTubePlayerMainScreen(Screen, ConfigListScreen):
 		self["VKeyIcon"].hide()
 		self["result"] = Label("")
 
-
 		self["searchactions"] = ActionMap(["ShortcutActions", "WizardActions", "HelpActions", "MediaPlayerActions"],
 		{
 			"ok": self.keyOK,
@@ -1024,16 +1023,16 @@ class MyTubePlayerMainScreen(Screen, ConfigListScreen):
 			return
 		nextUrl = myTubeService.getNextFeedEntriesURL()
 		if nextUrl is not None:
-			self.appendEntries = True
-			self.getFeed(nextUrl, _("More video entries."))
+			self.queryStarted()
+			self.queryThread = myTubeService.getNextPage(nextUrl, self.gotFeed, self.gotFeedError)
 
 	def getRelatedVideos(self, myentry):
-		if myentry:
-			myurl =  myentry.getRelatedVideos()
-			print "RELATEDURL--->",myurl
-			if myurl is not None:
-				self.appendEntries = False
-				self.getFeed(myurl, _("Related video entries."))
+		if myentry is None:
+			return
+
+		self.appendEntries = False
+		self.queryStarted()
+		self.queryThread = myTubeService.searchArgs({"relatedToVideoId": myentry.getTubeId()}, self.gotFeed, self.gotFeedError)
 
 	def getResponseVideos(self, myentry):
 		if myentry:
@@ -1044,12 +1043,16 @@ class MyTubePlayerMainScreen(Screen, ConfigListScreen):
 				self.getFeed(myurl, _("Response video entries."))
 
 	def getUserVideos(self, myentry):
-		if myentry:
-			myurl =  myentry.getUserVideos()
-			print "RESPONSEURL--->",myurl
-			if myurl is not None:
-				self.appendEntries = False
-				self.getFeed(myurl, _("User video entries."))
+		if myentry is None:
+			return
+
+		self.appendEntries = False
+		channeldId = myTubeService.getChannelPlaylistId(myentry.getUserId())
+		if channeldId is None:
+			return
+
+		#self.queryStarted()
+		#self.queryThread = myTubeService.searchArgs({"id": channeldId}, self.gotFeed, self.gotFeedError, "playlistItems")
 
 	def runSearch(self, searchContext = None):
 		print "[MyTubePlayer] runSearch"
@@ -1454,7 +1457,7 @@ class MyTubeVideoInfoScreen(Screen):
 			self["author"].setText(_("Author: ") + self.videoinfo["Author"])
 
 		if self.videoinfo["Published"] is not "unknown":
-			self["published"].setText(_("Added: ") + self.videoinfo["Published"].split("T")[0])
+			self["published"].setText(_("Added: ") + self.videoinfo["Published"])
 
 		if self.videoinfo["Views"] is not "not available":
 			self["views"].setText(_("Views: ") + str(self.videoinfo["Views"]))
@@ -1480,18 +1483,19 @@ class MyTubeVideoInfoScreen(Screen):
 		self.mythumbubeentries = self.videoinfo["Thumbnails"]
 		self.maxentries = len(self.mythumbubeentries)-1
 		if self.mythumbubeentries and len(self.mythumbubeentries):
-			currindex = 0
-			for entry in self.mythumbubeentries:
-				TubeID = self.videoinfo["TubeID"]
-				ThumbID = TubeID + str(currindex)
-				thumbnailFile = "/tmp/" + ThumbID + ".jpg"
-				currPic = [currindex,ThumbID,thumbnailFile,None]
-				self.thumbnails.append(currPic)
-				thumbnailUrl = None
-				thumbnailUrl = entry
-				if thumbnailUrl is not None:
-					client.downloadPage(thumbnailUrl,thumbnailFile).addCallback(self.fetchFinished,currindex,ThumbID).addErrback(self.fetchFailed,currindex,ThumbID)
-				currindex +=1
+			pass
+			#currindex = 0
+			#for entry in self.mythumbubeentries:
+			#	TubeID = self.videoinfo["TubeID"]
+			#	ThumbID = TubeID + str(currindex)
+			#	thumbnailFile = "/tmp/" + ThumbID + ".jpg"
+			#	currPic = [currindex,ThumbID,thumbnailFile,None]
+			#	self.thumbnails.append(currPic)
+			#	thumbnailUrl = None
+			#	thumbnailUrl = entry
+			#	if thumbnailUrl is not None:
+			#		client.downloadPage(thumbnailUrl,thumbnailFile).addCallback(self.fetchFinished,currindex,ThumbID).addErrback(self.fetchFailed,currindex,ThumbID)
+			#	currindex +=1
 		else:
 			pass
 
