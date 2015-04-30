@@ -225,8 +225,17 @@ class MyTubeFeedEntry():
 			return None
 
 	def getAuthor(self):
+		return self.getChannelTitle()
+
+	def getChannelTitle(self):
 		try:
-			return self.entry["snippet"]["channelTitle"].encode('utf-8').strip()
+			return str(self.entry["snippet"]["channelTitle"].encode('utf-8').strip())
+		except KeyError:
+			return None
+
+	def getChannelId(self):
+		try:
+			return str(self.entry["snippet"]["channelId"].encode('utf-8').strip())
 		except KeyError:
 			return None
 
@@ -586,9 +595,13 @@ class MyTubePlayerService():
 	def searchArgs(self, args, callback = None, errorback = None, endpoint = "search"):
 		print "[MyTube] MyTubePlayerService - searchArgs()"
 		self.feedentries = []
+		self.currentPage = 1
 
-		#if 'type' not in args:
-		#	args["type"] = "video"
+		if 'type' not in args:
+			args["type"] = "video"
+
+		if 'maxResults' not in args:
+			args["maxResults"] = 25
 
 		self.lastList = args
 		self.lastEndpoint = endpoint
@@ -621,6 +634,8 @@ class MyTubePlayerService():
 
 		args = self.lastList
 		args["pageToken"] = pageToken
+		if 'maxResults' not in args:
+			del args["maxResults"]
 
 		print "next page" + pageToken
 
@@ -640,7 +655,7 @@ class MyTubePlayerService():
 		if callback is not None:
 			callback(self.feed)
 
-	def gotFeedError(self, exception, errorback):
+	def gotFeedError(self, exception, errorback = None):
 		if errorback is not None:
 			errorback(exception)
 
@@ -730,6 +745,11 @@ class YoutubeQueryThread(Thread):
 
 			for search_result in search_response.get("items", []):
 				search_videos.append(search_result["id"]["videoId"])
+
+			if len(search_videos) == 0:
+				self.messages.push((False, "nothing found", self.errorback))
+				self.messagePump.send(0)
+				return
 
 			video_response = self.youtube.videos().list(
 				id=",".join(search_videos),

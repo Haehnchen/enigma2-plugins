@@ -1035,24 +1035,19 @@ class MyTubePlayerMainScreen(Screen, ConfigListScreen):
 		self.queryThread = myTubeService.searchArgs({"relatedToVideoId": myentry.getTubeId()}, self.gotFeed, self.gotFeedError)
 
 	def getResponseVideos(self, myentry):
-		if myentry:
-			myurl =  myentry.getResponseVideos()
-			print "RESPONSEURL--->",myurl
-			if myurl is not None:
-				self.appendEntries = False
-				self.getFeed(myurl, _("Response video entries."))
+		pass
 
 	def getUserVideos(self, myentry):
 		if myentry is None:
 			return
 
 		self.appendEntries = False
-		channeldId = myTubeService.getChannelPlaylistId(myentry.getUserId())
-		if channeldId is None:
+		channelId = myentry.getChannelId()
+		if channelId is None:
 			return
 
-		#self.queryStarted()
-		#self.queryThread = myTubeService.searchArgs({"id": channeldId}, self.gotFeed, self.gotFeedError, "playlistItems")
+		self.queryStarted()
+		self.queryThread = myTubeService.searchArgs({"channelId": channelId, "order": "date"}, self.gotFeed, self.gotFeedError)
 
 	def runSearch(self, searchContext = None):
 		print "[MyTubePlayer] runSearch"
