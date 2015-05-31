@@ -16,6 +16,7 @@ from Tools.Directories import resolveFilename, SCOPE_HDD
 from threading import Thread
 from ThreadQueue import ThreadQueue
 from xml.etree.cElementTree import fromstring as cet_fromstring
+from xml.etree.cElementTree import ParseError
 from StringIO import StringIO
 #import urllib
 from urllib import FancyURLopener
@@ -193,7 +194,13 @@ class MyTubeSuggestionsListScreen(Screen):
 		if suggestions and len(suggestions) > 0:
 			if not self.shown:
 				self.show()
-			suggestions_tree = cet_fromstring( suggestions )
+
+			try:
+				suggestions_tree = cet_fromstring( suggestions )
+			except ParseError as err:
+				print "MyTubeSearch update Error: " + str(str)
+				return None
+
 			if suggestions_tree:
 				self.list = []
 				self.suggestlist = []
