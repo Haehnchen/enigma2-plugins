@@ -23,11 +23,22 @@ from httplib import HTTPConnection, CannotSendRequest, BadStatusLine, HTTPExcept
 from urlparse import parse_qs, parse_qsl
 from threading import Thread
 
+from oauth2client.client import OAuth2Credentials
+import YoutubeRequests
+import json
+
+import httplib2
+
 HTTPConnection.debuglevel = 1
 
 DEVELOPER_KEY = "AIzaSyChvLZRinP2xwXoXWNEqVeaz71SQJnjrlc"
 YOUTUBE_API_SERVICE_NAME = "youtube"
 YOUTUBE_API_VERSION = "v3"
+
+YOUTUBE_API_CLIENT_ID = "1052746365248-me8avpg36emif15efi4fe1or4ngr30nt.apps.googleusercontent.com"
+YOUTUBE_API_CLIENT_SECRET = "kF_zGCwwBXr1VROqTFaQoHJZ"
+YOUTUBE_API_SCOPE = "https://www.googleapis.com/auth/youtube"
+YOUTUBE_API_CLIENT_TOKEN_REFRESH = "https://accounts.google.com/o/oauth2/token"
 
 if 'HTTPSConnection' not in dir(httplib):
 	# python on enimga2 has no https socket support
@@ -249,7 +260,7 @@ class MyTubeFeedEntry():
 			return None
 
 	def subscribeToUser(self):
-		return myTubeService.SubscribeToUser(self.getUserId())
+		return myTubeService.SubscribeToUser(self.getChannelId())
 
 	def addToFavorites(self):
 		return myTubeService.addToFavorites(self.getTubeId())
@@ -388,21 +399,54 @@ class MyTubePlayerService():
 #	DeveloperKey: AI39si4AjyvU8GoJGncYzmqMCwelUnqjEMWTFCcUtK-VUzvWygvwPO-sadNwW5tNj9DDCHju3nnJEPvFy4WZZ6hzFYCx8rJ6Mw
 
 	cached_auth_request = {}
-	current_auth_token = None
 	yt_service = None
 	currentPage = 1
+	http_credentials = None
+	is_authenticated = False
+	channel_playlists = None
+	refresh_token = None
 
 	def __init__(self):
 		print "[MyTube] MyTubePlayerService - init"
 		self.feedentries = []
-		self.lastList = {}
-		self.lastEndpoint = None
+		self.lastRequest = None
 		self.feed = None
 
 	def startService(self):
 		print "[MyTube] MyTubePlayerService - startService"
 
-		self.yt_service = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=DEVELOPER_KEY)
+		if self.refresh_token is None:
+			self.yt_service = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=DEVELOPER_KEY)
+			return
+
+		if self.http_credentials is None:
+			print "[MyTube] MyTubePlayerService - build getCredentials with " + self.refresh_token
+			try:
+
+				self.http_credentials = OAuth2Credentials(
+					access_token=None,
+					client_id=YOUTUBE_API_CLIENT_ID,
+					client_secret=YOUTUBE_API_CLIENT_SECRET,
+					refresh_token=self.refresh_token,
+					token_expiry=None,
+					token_uri=YOUTUBE_API_CLIENT_TOKEN_REFRESH,
+					user_agent=None
+				).authorize(httplib2.Http())
+
+				self.yt_service = build(
+					YOUTUBE_API_SERVICE_NAME,
+					YOUTUBE_API_VERSION,
+					developerKey=DEVELOPER_KEY,
+					http=self.http_credentials
+				)
+
+				self.is_authenticated = True
+
+			except Exception, e:
+				print "[MyTube] MyTubePlayerService - getCredentials error " + str(e)
+				self.is_authenticated = False
+				self.refresh_token = None
+				self.yt_service = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=DEVELOPER_KEY)
 
 		# missing ssl support? youtube will help us on some feed urls
 		#self.yt_service.ssl = self.supportsSSL()
@@ -411,11 +455,6 @@ class MyTubePlayerService():
 		#self.yt_service.developer_key = 'AI39si4AjyvU8GoJGncYzmqMCwelUnqjEMWTFCcUtK-VUzvWygvwPO-sadNwW5tNj9DDCHju3nnJEPvFy4WZZ6hzFYCx8rJ6Mw'
 		#self.yt_service.client_id = 'ytapi-dream-MyTubePlayer-i0kqrebg-0'
 
-		# yt_service is reinit on every feed build; cache here to not reauth. remove init every time?
-		if self.current_auth_token is not None:
-			print "[MyTube] MyTubePlayerService - auth_cached"
-			#self.yt_service.SetClientLoginToken(self.current_auth_token)
-		
 #		self.loggedIn = False
 		#os.environ['http_proxy'] = 'http://169.229.50.12:3128'
 		#proxy = os.environ.get('http_proxy')
@@ -425,97 +464,24 @@ class MyTubePlayerService():
 
 	def stopService(self):
 		print "[MyTube] MyTubePlayerService - stopService"
-		del self.ytService
+		del self.refresh_token
+		del self.http_credentials
+		del self.yt_service
 
-	def getLoginTokenOnCurl(self, email, pw):
-		return None
-
-		opts = {
-		  'service':'youtube',
-		  'accountType': 'HOSTED_OR_GOOGLE',
-		  'Email': email,
-		  'Passwd': pw,
-		  'source': self.yt_service.client_id,
-		}
-		
-		print "[MyTube] MyTubePlayerService - Starting external curl auth request"
-		result = os.popen('curl -s -k -X POST "%s" -d "%s"' % (gdata.youtube.service.YOUTUBE_CLIENTLOGIN_AUTHENTICATION_URL , urlencode(opts))).read()
-		
-		return result
-
-	def supportsSSL(self):
-		return 'HTTPSConnection' in dir(httplib)
-
-	def getFormattedTokenRequest(self, email, pw):
-		return dict(parse_qsl(self.getLoginTokenOnCurl(email, pw).strip().replace('\n', '&')))
-	
 	def getAuthedUsername(self):
-		# on external curl we can get real username
-		if self.cached_auth_request.get('YouTubeUser') is not None:
-			return self.cached_auth_request.get('YouTubeUser')
-
 		if self.is_auth() is False:
 			return ''
 
 		# current gdata auth class save doesnt save realuser
 		return 'Logged In'
 
-	def auth_user(self, username, password):
-		print "[MyTube] MyTubePlayerService - auth_use - " + str(username)
-
-		if self.yt_service is None:
-			self.startService()
-		
-		if self.current_auth_token is not None:
-			print "[MyTube] MyTubePlayerService - auth_cached"
-			self.yt_service.SetClientLoginToken(self.current_auth_token)
-			return
-
-		if self.supportsSSL() is False:
-			print "[MyTube] MyTubePlayerService - HTTPSConnection not found trying external curl"
-			self.cached_auth_request = self.getFormattedTokenRequest(username, password)
-			if self.cached_auth_request.get('Auth') is None:
-				raise Exception('Got no auth token from curl; you need curl and valid youtube login data')
-			
-			self.yt_service.SetClientLoginToken(self.cached_auth_request.get('Auth'))
-		else:
-			print "[MyTube] MyTubePlayerService - Using regularly ProgrammaticLogin for login"
-			self.yt_service.email = username
-			self.yt_service.password  = password
-			self.yt_service.ProgrammaticLogin()
-			
-		# double check login: reset any token on wrong logins
-		if self.is_auth() is False:
-			print "[MyTube] MyTubePlayerService - auth_use - auth not possible resetting"
-			self.resetAuthState()
-			return
-
-		print "[MyTube] MyTubePlayerService - Got successful login"
-		self.current_auth_token = self.auth_token()
-
-	def resetAuthState(self):
-		print "[MyTube] MyTubePlayerService - resetting auth"
-		self.cached_auth_request = {}
-		self.current_auth_token = None
-
-		if self.yt_service is None:
-			return
-
-		self.yt_service.current_token = None
-		self.yt_service.token_store.remove_all_tokens()
+	def restartWithToken(self, reset_token):
+		print "[MyTube] MyTubePlayerService - auth_use - " + str(reset_token)
+		self.refresh_token = str(reset_token)
+		self.startService()
 
 	def is_auth(self):
-		return False
-		if self.current_auth_token is not None:
-			return True		
-		
-		if self.yt_service.current_token is None:
-			return False
-		
-		return self.yt_service.current_token.get_token_string() != 'None'
-
-	def auth_token(self):
-		return self.yt_service.current_token.get_token_string()
+		return self.refresh_token is not None and self.is_authenticated
 
 	def getFeedService(self, feedname):
 		if feedname == "top_rated":
@@ -540,19 +506,24 @@ class MyTubePlayerService():
 		print "[MyTube] MyTubePlayerService - getFeed:",url, feedname
 		self.feedentries = []
 
-		if feedname == "my_subscriptions":
-			url = "http://gdata.youtube.com/feeds/api/users/default/newsubscriptionvideos"
-		elif feedname == "my_favorites":
-			url = "http://gdata.youtube.com/feeds/api/users/default/favorites"
-		elif feedname == "my_history":
-			url = "http://gdata.youtube.com/feeds/api/users/default/watch_history?v=2"
-		elif feedname == "my_recommendations":
-			url = "http://gdata.youtube.com/feeds/api/users/default/recommendations?v=2"
-		elif feedname == "my_watch_later":
-			url = "http://gdata.youtube.com/feeds/api/users/default/watch_later?v=2"
-		elif feedname == "my_uploads":
-			url = "http://gdata.youtube.com/feeds/api/users/default/uploads"
-		elif feedname in ("hd", "most_popular", "most_shared", "on_the_web"):
+		user_feeds = {
+			#"my_subscriptions": "favorites",
+			"my_favorites": "favorites",
+			"my_history": "watchHistory",
+			"my_likes": "likes",
+			"my_watch_later": "favorites",
+			"my_uploads": "uploads",
+		}
+
+		if feedname in user_feeds:
+
+			playlistId = self.getUserPlaylist(user_feeds.get(feedname))
+			if playlistId is None:
+				return
+
+			return self.request(YoutubeRequests.PlaylistRequest(self.yt_service, playlistId), callback, errorback)
+
+		if feedname in ("hd", "most_popular", "most_shared", "on_the_web"):
 			if feedname == "hd":
 				url = "http://gdata.youtube.com/feeds/api/videos/-/HD"
 			else:
@@ -561,6 +532,15 @@ class MyTubePlayerService():
 			pass
 
 		return self.search(searchTerms="test", callback=callback, errorback=errorback)
+
+	def getUserPlaylist(self, name):
+		if self.channel_playlists is None:
+			self.channel_playlists = self.yt_service.channels().list(mine=True, part="contentDetails").execute()
+
+		try:
+			return self.channel_playlists['items'][0]["contentDetails"]["relatedPlaylists"][name]
+		except KeyError:
+			return None
 
 	def search(self, searchTerms, startIndex = 1, maxResults = 25,
 					orderby = "relevance", time = 'all_time', racy = "include",
@@ -584,29 +564,22 @@ class MyTubePlayerService():
 		if orderby == "published":
 			orderby = "date"
 
-		return self.searchArgs({
+		return self.request(YoutubeRequests.SearchRequest(self.yt_service, {
 			"maxResults": maxResults,
 			"order": orderby,
 			"q": searchTerms,
 			"publishedAfter": publishedAfter,
-			"pageToken": pageToken,
-		}, callback, errorback)
+		}), callback, errorback)
 
-	def searchArgs(self, args, callback = None, errorback = None, endpoint = "search"):
-		print "[MyTube] MyTubePlayerService - searchArgs()"
+
+	def request(self, request = None, callback = None, errorback = None):
+		print "[MyTube] MyTubePlayerService - request()"
 		self.feedentries = []
 		self.currentPage = 1
 
-		if 'type' not in args:
-			args["type"] = "video"
+		self.lastRequest = request
 
-		if 'maxResults' not in args:
-			args["maxResults"] = 25
-
-		self.lastList = args
-		self.lastEndpoint = endpoint
-
-		queryThread = YoutubeQueryThread(getattr(self.yt_service, endpoint)(), args, self.gotFeed, self.gotFeedError, callback, errorback, self.yt_service)
+		queryThread = YoutubeQueryThread(request, {}, self.gotFeed, self.gotFeedError, callback, errorback, self.yt_service)
 		queryThread.start()
 
 		return queryThread
@@ -632,16 +605,21 @@ class MyTubePlayerService():
 		print "[MyTube] MyTubePlayerService - getNextPage:",pageToken
 		self.feedentries = []
 
-		args = self.lastList
-		args["pageToken"] = pageToken
-		if 'maxResults' not in args:
-			del args["maxResults"]
+		if self.lastRequest is None:
+			print "lastRequest empty"
+			return
 
-		print "next page" + pageToken
+		page_token = self.lastRequest.getAndActivateNextPage()
+		if page_token is None:
+			print "page_token empty"
+			return
 
-		queryThread = YoutubeQueryThread(getattr(self.yt_service, self.lastEndpoint)(), args, self.gotFeed, self.gotFeedError, callback, errorback, self.yt_service)
+		print "next page" + page_token
+
+		queryThread = YoutubeQueryThread(self.lastRequest, {}, self.gotFeed, self.gotFeedError, callback, errorback, self.yt_service)
 		queryThread.start()
 
+		# todo: not here, its async
 		self.currentPage += 1
 
 		return queryThread
@@ -659,35 +637,70 @@ class MyTubePlayerService():
 		if errorback is not None:
 			errorback(exception)
 
-	def SubscribeToUser(self, username):
-		try:
-			new_subscription = self.yt_service.AddSubscriptionToChannel(username_to_subscribe_to=username)
-	
-			if isinstance(new_subscription, gdata.youtube.YouTubeSubscriptionEntry):
-				print '[MyTube] MyTubePlayerService: New subscription added'
-				return _('New subscription added')
-			
+	def SubscribeToUser(self, channelId):
+
+		if channelId is None or len(channelId) == 0:
 			return _('Unknown error')
-		except gdata.service.RequestError as req:
-			return str('Error: ' + str(req[0]["body"]))
-		except Exception as e:
-			return str('Error: ' + e)
+
+		request = self.yt_service.subscriptions().insert(
+			part="snippet",
+			body=dict(
+				snippet=dict(
+					resourceId=dict(
+						channelId=channelId
+					)
+				)
+			)
+		)
+
+		try:
+			request.execute()
+
+			print '[MyTube] MyTubePlayerService: New subscription added'
+			return _('New subscription added')
+		except HttpError, err:
+			if err.resp.get('content-type', '').startswith('application/json'):
+				try:
+					print '[MyTube] MyTubePlayerService: subscription error ' + json.loads(err.content)['error']['errors'][0]['reason']
+					return str('Error' + json.loads(err.content)['error']['errors'][0]['reason'])
+				except KeyError:
+					pass
+
+			return str('Error: ' + str(err))
 	
 	def addToFavorites(self, video_id):
+
+		playlist_id = self.getUserPlaylist('favorites')
+		if playlist_id is None:
+			return
+
+		request = self.yt_service.playlistItems().insert(
+			part="snippet",
+			body=dict(
+				snippet=dict(
+					playlistId=playlist_id,
+					resourceId=dict(
+						kind='youtube#video',
+						videoId=video_id
+					)
+				),
+			)
+		)
+
 		try:
-			video_entry = self.yt_service.GetYouTubeVideoEntry(video_id=video_id)
-			response = self.yt_service.AddVideoEntryToFavorites(video_entry)
-			
-			# The response, if succesfully posted is a YouTubeVideoEntry
-			if isinstance(response, gdata.youtube.YouTubeVideoEntry):
-				print '[MyTube] MyTubePlayerService: Video successfully added to favorites'
-				return _('Video successfully added to favorites')	
-	
-			return _('Unknown error')
-		except gdata.service.RequestError as req:
-			return str('Error: ' + str(req[0]["body"]))
-		except Exception as e:
-			return str('Error: ' + e)
+			request.execute()
+		except HttpError, err:
+			if err.resp.get('content-type', '').startswith('application/json'):
+				try:
+					print '[MyTube] MyTubePlayerService: favorites error ' + json.loads(err.content)['error']['errors'][0]['reason']
+					return str('Error' + json.loads(err.content)['error']['errors'][0]['reason'])
+				except KeyError:
+					pass
+
+			return str('Error: ' + str(err))
+
+		print '[MyTube] MyTubePlayerService: Video successfully added to favorites'
+		return _('Video successfully added to favorites')
 	
 	def getTitle(self):
 		return ""
@@ -699,10 +712,10 @@ class MyTubePlayerService():
 		return ""
 
 	def getTotalResults(self):
-		if self.feed["pageInfo"]["totalResults"] is None:
+		try:
+			return self.feed["pageInfo"]["totalResults"]
+		except KeyError:
 			return 0
-
-		return self.feed["pageInfo"]["totalResults"]
 
 	def getNextFeedEntriesURL(self):
 		try:
@@ -715,7 +728,7 @@ class MyTubePlayerService():
 		return self.currentPage
 
 class YoutubeQueryThread(Thread):
-	def __init__(self, youtube_endpoint, args, gotFeed, gotFeedError, callback, errorback, youtube):
+	def __init__(self, youtube_request, args, gotFeed, gotFeedError, callback, errorback, youtube):
 		Thread.__init__(self)
 		self.messagePump = ePythonMessagePump()
 		self.messages = ThreadQueue()
@@ -723,7 +736,7 @@ class YoutubeQueryThread(Thread):
 		self.gotFeedError = gotFeedError
 		self.callback = callback
 		self.errorback = errorback
-		self.youtube_endpoint = youtube_endpoint
+		self.youtube_request = youtube_request
 		self.youtube = youtube
 		self.args = args
 		self.canceled = False
@@ -737,28 +750,21 @@ class YoutubeQueryThread(Thread):
 
 		try:
 
-			args = self.args
-			args['part'] = "id"
-			search_response = self.youtube_endpoint.list(**args).execute()
+			search_videos = self.youtube_request.getResponse()
 
-			search_videos = []
-
-			for search_result in search_response.get("items", []):
-				search_videos.append(search_result["id"]["videoId"])
-
-			if len(search_videos) == 0:
+			if search_videos is None or len(search_videos.get("items", [])) == 0:
 				self.messages.push((False, "nothing found", self.errorback))
 				self.messagePump.send(0)
 				return
 
-			video_response = self.youtube.videos().list(
-				id=",".join(search_videos),
+			video_response = self.youtube_request.getYoutubeService().videos().list(
+				id=",".join(search_videos.get("items", [])),
 				part='id,snippet,recordingDetails,statistics,contentDetails'
 			).execute()
 
-			search_response["items"] = video_response.get("items", [])
+			search_videos['items'] = video_response.get("items", [])
 
-			self.messages.push((True, search_response, self.callback))
+			self.messages.push((True, search_videos, self.callback))
 			self.messagePump.send(0)
 		except Exception, ex:
 			print ex

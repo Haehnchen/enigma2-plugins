@@ -23,6 +23,7 @@ from Screens.VirtualKeyBoard import VirtualKeyBoard
 from Tools.BoundFunction import boundFunction
 from Tools.Directories import resolveFilename, SCOPE_HDD, SCOPE_CURRENT_PLUGIN
 from Tools.Downloader import downloadWithProgress
+import YoutubeRequests
 
 from __init__ import decrypt_block
 
@@ -152,8 +153,7 @@ config.plugins.mytube.general.history = ConfigText(default="")
 config.plugins.mytube.general.clearHistoryOnClose = ConfigYesNo(default = False)
 config.plugins.mytube.general.AutoLoadFeeds = ConfigYesNo(default = True)
 config.plugins.mytube.general.resetPlayService = ConfigYesNo(default = False)
-config.plugins.mytube.general.username = ConfigText(default="", fixed_size = False)
-config.plugins.mytube.general.password = ConfigPassword(default="")
+config.plugins.mytube.general.refresh_token = ConfigText(default="", fixed_size = False)
 #config.plugins.mytube.general.useHTTPProxy = ConfigYesNo(default = False)
 #config.plugins.mytube.general.ProxyIP = ConfigIP(default=[0,0,0,0])
 #config.plugins.mytube.general.ProxyPort = ConfigNumber(default=8080)
@@ -456,18 +456,15 @@ class MyTubePlayerMainScreen(Screen, ConfigListScreen):
 		self["config"].list = self.searchContextEntries
 		self["config"].l.setList(self.searchContextEntries)
 
-
 	def tryUserLogin(self):
-		if config.plugins.mytube.general.username.value is "" or config.plugins.mytube.general.password.value is "":
+		if config.plugins.mytube.general.refresh_token.value is "":
 			return
 
-		try:
-			myTubeService.auth_user(config.plugins.mytube.general.username.value, config.plugins.mytube.general.password.value)
-			self.statuslist.append(( _("Login OK"), _('Hello') + ' ' + str(config.plugins.mytube.general.username.value)))
-		except Exception as e:
-			print 'Login-Error: ' + str(e)
-			self.statuslist.append(( _("Login failed"), str(e)))
-
+		myTubeService.restartWithToken(config.plugins.mytube.general.refresh_token.value)
+		if myTubeService.is_auth() is True:
+			self.statuslist.append(( _("Login OK"), _('Hello')))
+		else:
+			self.statuslist.append(( _("Login failed"), ""))
 	def setState(self,status = None):
 		if status:
 			self.currList = "status"
@@ -1032,7 +1029,12 @@ class MyTubePlayerMainScreen(Screen, ConfigListScreen):
 
 		self.appendEntries = False
 		self.queryStarted()
-		self.queryThread = myTubeService.searchArgs({"relatedToVideoId": myentry.getTubeId()}, self.gotFeed, self.gotFeedError)
+
+		self.queryThread = myTubeService.request(YoutubeRequests.SearchRequest(myTubeService.yt_service, {
+			'relatedToVideoId': myentry.getTubeId(),
+			'type': 'video',
+			'order': "date",
+		}), self.gotFeed, self.gotFeedError)
 
 	def getResponseVideos(self, myentry):
 		pass
@@ -1047,7 +1049,11 @@ class MyTubePlayerMainScreen(Screen, ConfigListScreen):
 			return
 
 		self.queryStarted()
-		self.queryThread = myTubeService.searchArgs({"channelId": channelId, "order": "date"}, self.gotFeed, self.gotFeedError)
+
+		self.queryThread = myTubeService.request(YoutubeRequests.SearchRequest(myTubeService.yt_service, {
+			'channelId': channelId,
+			'order': "date",
+		}), self.gotFeed, self.gotFeedError)
 
 	def runSearch(self, searchContext = None):
 		print "[MyTubePlayer] runSearch"
